@@ -23,6 +23,8 @@ typedef double real64;
 
 typedef uint32 bool32;
 
+typedef uintptr_t uintptr;
+
 #define internal static
 #define local_persist static
 #define global_variable static
@@ -246,6 +248,70 @@ PDBGetIndexedStream(pdb_file *PDB, uint32 StreamIndex)
 
 #include "win32_pdbdump.h"
 
+internal char *
+GetOnePastLastSlash(char *String)
+{
+    char *Result = 0;
+
+    for(char *Char = String;
+        *Char;
+        ++Char)
+    {
+        if(*Char == '\\' || *Char == '/')
+        {
+            Result = Char;
+        }
+    }
+    
+    return Result;
+}
+
+internal char *
+FindInTable(name_table *Table, uint32 Identifier)
+{
+    char *Result = 0;
+    
+    while(Table->Identifier != TABLE_END)
+    {
+        if(Table->Identifier == Identifier)
+        {
+            Result = Table->Name;
+            break;
+        }
+        
+        ++Table;
+    }
+
+    return Result;
+}
+
+inline void *
+Align4Byte(void *Address)
+{
+    if(((uintptr)Address % 4) != 0)
+    {
+        (char *)Address += 4 - ((uintptr)Address % 4);
+    }
+
+    return Address;
+}
+
+internal leaf_record_header *
+GetLeafRecordFromTPI(leaf_record_header *StartRecord, uint32 StartIndex, uint32 SearchIndex)
+{
+    leaf_record_header *Current = StartRecord;
+    
+    for(uint32 Index = StartIndex;
+        Index < SearchIndex;
+        ++Index)
+    {
+        Current = (leaf_record_header *)((char *)Current + Current->Length + 2);
+    }
+    
+    return Current;
+}
+
+
 int main(int ArgC, char *ArgV[])
 {
     char *FileMagic = "Microsoft C / C++ MSF 7.00\\r\\n\x1a\x44\x53\x00\x00\x00";
@@ -366,12 +432,80 @@ int main(int ArgC, char *ArgV[])
         }
 
         // NOTE(felipe): TPI Stream
-//        pdb_stream_header *PDBStreamHeader = (pdb_stream_header *)PDBGetIndexedStream(&PDB, 2);
+        tpi_stream_header *TPIStreamHeader = (tpi_stream_header *)PDBGetIndexedStream(&PDB, 2);
+        
+        printf("\nTPI Stream:\n");
+        printf("\tVersion: %d\n\tBegin Type Index: %d\n\tEnd Type Index: %d\n\tType Record Bytes: %d\n",
+               TPIStreamHeader->Version, TPIStreamHeader->TypeIndexBegin, TPIStreamHeader->TypeIndexEnd, TPIStreamHeader->TypeRecordBytes);
 
+        leaf_record_header *StartRecord = (leaf_record_header *)Align4Byte((TPIStreamHeader + 1));
+        leaf_record_header *EndRecord = (leaf_record_header *)((char *)StartRecord + TPIStreamHeader->TypeRecordBytes);
+        leaf_record_header *Record = StartRecord;
+        while(Record < EndRecord)
+        {
+            if(Record->Kind == LF_STRUCTURE)
+            {
+                printf("record length: %.4d  type: %s ", Record->Length, FindInTable(LeafRecordNames, Record->Kind));
+                
+                leaf_record_struct *Struct = (leaf_record_struct *)Record;
+                printf(Struct->Name);
+
+                leaf_record_field *Members = (leaf_record_field *)GetLeafRecordFromTPI(StartRecord, TPIStreamHeader->TypeIndexBegin,
+                                                                                       Struct->FieldList);
+                
+                leaf_record_substruct *SubStruct = (leaf_record_substruct *)Members->Data;
+                
+                if(SubStruct->Kind == LF_MEMBER)
+                {
+                    leaf_record_substruct_member *SubStructMember = (leaf_record_substruct_member *)SubStruct;
+
+                    int BH = 69;
+                }
+                
+                /*
+                typedef struct leaf_record_substruct_member
+                {
+                    leaf_record_substruct Header;
+    
+                    class_field_attributes FieldAttributes;
+                    uint32 Index;
+                    uint32 Offset;
+                } leaf_record_substruct;
+                */
+                
+                printf("\n");
+            }
+            
+            Record = (leaf_record_header *)((char *)Record + Record->Length + 2);
+        }
+        
         // NOTE(felipe): DBI Stream
         dbi_stream_header *DBIStreamHeader = (dbi_stream_header *)PDBGetIndexedStream(&PDB, 3);
+        
+        printf("\nDBI Stream:\n");
+        
         module_info *Module = (module_info *)(DBIStreamHeader + 1);
-        char *ModuleName = (char *)(Module + 1);
+        module_info *EndModule = (module_info *)((char *)Module + DBIStreamHeader->ModInfoSize);
+        uint32 ModuleInfoCount = 0;
+        while(Module < EndModule)
+        {            
+            char *ModuleName = (char *)(Module + 1);
+            uint32 ModuleNameLength = strlen(ModuleName);
+            
+            char *ObjectName = ModuleName + ModuleNameLength + 1;
+            uint32 ObjectNameLength = strlen(ObjectName);
+            
+            if(ModuleNameLength)
+            {
+//                printf("\t%s(%s)\n", GetOnePastLastSlash(ModuleName), GetOnePastLastSlash(ObjectName));
+            }
+            
+            Module = (module_info *)(ObjectName + ObjectNameLength + 1);
+            ++ModuleInfoCount;
+        }
+
+        printf("\tNumber of Modules: %d\n", ModuleInfoCount);
+        
         
         //
         //

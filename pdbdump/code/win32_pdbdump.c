@@ -215,9 +215,9 @@ PDBGetIndexedStream(pdb_file *PDB, uint32 StreamIndex)
     uint32 PDBStreamSize = PDB->StreamDirectory->StreamSizes[StreamIndex];
     uint32 PDBStreamBlockCount = Ceil((real32)PDBStreamSize/PDB->SuperBlock->BlockSize);
     uint32 RoundedPDBStreamSize = PDBStreamBlockCount*PDB->SuperBlock->BlockSize;
-        
+    
     uint8 *Stream = malloc(RoundedPDBStreamSize);
-        
+    
     uint32 *StreamDirectoryStreams = PDB->StreamDirectory->StreamSizes + PDB->StreamDirectory->NumberOfStreams;
     uint32 *PDBStreamBlocks = StreamDirectoryStreams;
     for(uint32 Index = 0;
@@ -227,7 +227,7 @@ PDBGetIndexedStream(pdb_file *PDB, uint32 StreamIndex)
         uint32 StreamSize = Ceil((real32)PDB->StreamDirectory->StreamSizes[Index]/PDB->SuperBlock->BlockSize);
         PDBStreamBlocks += StreamSize;
     }
-        
+    
     for(uint32 BlockIndex = 0;
         BlockIndex < PDBStreamBlockCount;
         ++BlockIndex)
@@ -242,7 +242,7 @@ PDBGetIndexedStream(pdb_file *PDB, uint32 StreamIndex)
             CurrentBlockDestination[Index] = CurrentBlockSource[Index];
         }
     }
-
+    
     return Stream;
 }
 
@@ -259,7 +259,7 @@ GetOnePastLastSlash(char *String)
     {
         if(*Char == '\\' || *Char == '/')
         {
-            Result = Char;
+            Result = Char + 1;
         }
     }
     
@@ -294,6 +294,49 @@ Align4Byte(void *Address)
     }
 
     return Address;
+}
+
+internal void
+HexDump(void *addr, int len) 
+{
+    int i;
+    unsigned char buff[17];
+    unsigned char *pc = (unsigned char*)addr;
+    
+    // Process every byte in the data.
+    for (i = 0; i < len; i++) {
+        // Multiple of 16 means new line (with line offset).
+
+        if ((i % 16) == 0) {
+            // Just don't print ASCII for the zeroth line.
+            if (i != 0)
+                printf("  %s\n", buff);
+
+            // Output the offset.
+            printf("  %04x ", i);
+        }
+
+        // Now the hex code for the specific character.
+        printf(" %02x", pc[i]);
+
+        // And store a printable ASCII character for later.
+        if ((pc[i] < 0x20) || (pc[i] > 0x7e)) {
+            buff[i % 16] = '.';
+        } else {
+            buff[i % 16] = pc[i];
+        }
+
+        buff[(i % 16) + 1] = '\0';
+    }
+
+    // Pad out last line if not exactly 16 characters.
+    while ((i % 16) != 0) {
+        printf("   ");
+        i++;
+    }
+
+    // And print the final ASCII bit.
+    printf("  %s\n", buff);
 }
 
 internal leaf_record_header *
@@ -438,46 +481,85 @@ int main(int ArgC, char *ArgV[])
         printf("\tVersion: %d\n\tBegin Type Index: %d\n\tEnd Type Index: %d\n\tType Record Bytes: %d\n",
                TPIStreamHeader->Version, TPIStreamHeader->TypeIndexBegin, TPIStreamHeader->TypeIndexEnd, TPIStreamHeader->TypeRecordBytes);
 
+#if 0
         leaf_record_header *StartRecord = (leaf_record_header *)Align4Byte((TPIStreamHeader + 1));
         leaf_record_header *EndRecord = (leaf_record_header *)((char *)StartRecord + TPIStreamHeader->TypeRecordBytes);
         leaf_record_header *Record = StartRecord;
         while(Record < EndRecord)
         {
-            if(Record->Kind == LF_STRUCTURE)
+            switch(Record->Kind)
             {
-                printf("record length: %.4d  type: %s ", Record->Length, FindInTable(LeafRecordNames, Record->Kind));
-                
-                leaf_record_struct *Struct = (leaf_record_struct *)Record;
-                printf(Struct->Name);
-
-                leaf_record_field *Members = (leaf_record_field *)GetLeafRecordFromTPI(StartRecord, TPIStreamHeader->TypeIndexBegin,
-                                                                                       Struct->FieldList);
-                
-                leaf_record_substruct *SubStruct = (leaf_record_substruct *)Members->Data;
-                
-                if(SubStruct->Kind == LF_MEMBER)
+                case LF_STRUCTURE:
                 {
-                    leaf_record_substruct_member *SubStructMember = (leaf_record_substruct_member *)SubStruct;
+                    leaf_record_struct *Struct = (leaf_record_struct *)Record;
+                
+                    printf("struct %s type: %s\n", Struct->Name, FindInTable(LeafRecordNames, Record->Kind));
+                
+                    leaf_record_field *Members = (leaf_record_field *)GetLeafRecordFromTPI(StartRecord, TPIStreamHeader->TypeIndexBegin,
+                                                                                           Struct->FieldList);
+                
+                    leaf_record_substruct_header *SubStruct = (leaf_record_substruct_header *)Members->Data;
+                    for(uint32 SubIndex = 0;
+                        SubIndex < Struct->Count;
+                        ++SubIndex)
+                    {
+                        switch(SubStruct->Kind)
+                        {                        
+                            case LF_MEMBER:
+                            {
+                                leaf_record_substruct_member *Member = (leaf_record_substruct_member *)SubStruct;
+                            
+                                // TODO(felipe): This should consider TypeIndexBegin.
+                                char *TypeName = "struct";
+                                if(Member->Index < 0x1000)
+                                {
+                                    type_index *LeafIndex = (type_index *)&Member->Index;
+                                    TypeName = FindInTable(SimpleTypeNames, LeafIndex->Kind);
+                                }
+                            
+                                printf("    %s %s %d\n", TypeName, Member->Name,
+                                       Member->Offset);
+                            
+                                SubStruct = (void *)((uint8 *)Member + sizeof(leaf_record_substruct_member) + strlen(Member->Name) + 1);
+                            } break;
+                        
+                            case LF_ENUMERATE:
+                            {
+                                leaf_record_substruct_enumerate *Enum = (leaf_record_substruct_enumerate *)SubStruct;
+                            
+                                printf(" %s\n", Enum->Name);
+                            
+                                SubStruct = (void *)((uint8 *)Enum + sizeof(leaf_record_substruct_enumerate) + strlen(Enum->Name) + 1);
+                            
+#if 0
+                                typedef struct leaf_record_substruct_enumerate
+                                {
+                                    leaf_record_substruct_header Header;
+                                
+                                    class_field_attributes FieldAttributes;
+                                
+                                    uint16 EnumValue;
+                                
+                                    char Name[];
+                                } leaf_record_substruct_enumerate;
+#endif
+                            } break;
+                        }
+                    
+                        while((*(char *)SubStruct & 0xf0) == 0xf0)
+                        {
+                            char Offset = *(char *)SubStruct & 0x0f;
+                            (char *)SubStruct += Offset;
+                        }
+                    }
 
-                    int BH = 69;
-                }
-                
-                /*
-                typedef struct leaf_record_substruct_member
-                {
-                    leaf_record_substruct Header;
-    
-                    class_field_attributes FieldAttributes;
-                    uint32 Index;
-                    uint32 Offset;
-                } leaf_record_substruct;
-                */
-                
-                printf("\n");
+                    printf("\n");
+                } break;
             }
             
             Record = (leaf_record_header *)((char *)Record + Record->Length + 2);
         }
+#endif
         
         // NOTE(felipe): DBI Stream
         dbi_stream_header *DBIStreamHeader = (dbi_stream_header *)PDBGetIndexedStream(&PDB, 3);
@@ -487,25 +569,58 @@ int main(int ArgC, char *ArgV[])
         module_info *Module = (module_info *)(DBIStreamHeader + 1);
         module_info *EndModule = (module_info *)((char *)Module + DBIStreamHeader->ModInfoSize);
         uint32 ModuleInfoCount = 0;
-        while(Module < EndModule)
-        {            
-            char *ModuleName = (char *)(Module + 1);
+//        while(Module < EndModule)
+        {
+            char *ModuleName = Module->ModuleName;
             uint32 ModuleNameLength = strlen(ModuleName);
             
-            char *ObjectName = ModuleName + ModuleNameLength + 1;
+            char *ObjectName = Module->ModuleName + ModuleNameLength + 1;
             uint32 ObjectNameLength = strlen(ObjectName);
             
             if(ModuleNameLength)
             {
-//                printf("\t%s(%s)\n", GetOnePastLastSlash(ModuleName), GetOnePastLastSlash(ObjectName));
+                printf("\t%s(%s)\n", GetOnePastLastSlash(ModuleName), GetOnePastLastSlash(ObjectName));
             }
+
+            
             
             Module = (module_info *)(ObjectName + ObjectNameLength + 1);
             ++ModuleInfoCount;
         }
-
-        printf("\tNumber of Modules: %d\n", ModuleInfoCount);
         
+        printf("\n\tNumber of Modules: %d\n", ModuleInfoCount);
+        
+        //
+        //
+        
+        
+        // NOTE(felipe): TPI Stream
+        tpi_stream_header *IPIStreamHeader = (tpi_stream_header *)PDBGetIndexedStream(&PDB, 4);
+        
+        printf("\nIPI Stream:\n");
+        printf("\tVersion: %d\n\tBegin Type Index: %d\n\tEnd Type Index: %d\n\tType Record Bytes: %d\n",
+               IPIStreamHeader->Version, IPIStreamHeader->TypeIndexBegin, IPIStreamHeader->TypeIndexEnd, IPIStreamHeader->TypeRecordBytes);
+        
+#if 1
+        leaf_record_header *StartRecord = (leaf_record_header *)Align4Byte((IPIStreamHeader + 1));
+        leaf_record_header *EndRecord = (leaf_record_header *)((char *)StartRecord + IPIStreamHeader->TypeRecordBytes);
+        leaf_record_header *Record = StartRecord;
+        while(Record < EndRecord)
+        {
+            printf("    type: %s ", FindInTable(LeafRecordNames, Record->Kind));
+
+            if(Record->Kind == LF_FUNC_ID)
+            {
+                leaf_record_function_id *FunctionID = (leaf_record_function_id *)Record;
+                
+                printf(FunctionID->Name);
+            }
+
+            printf("\n");
+            
+            Record = (leaf_record_header *)((char *)Record + Record->Length + 2);
+        }
+#endif
         
         //
         //
